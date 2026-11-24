@@ -1,0 +1,244 @@
+# P1 可比性诊断（2026-10-15）——配置。一个实验一个文件。
+#
+# 本配置只驱动「读缓存标量分数 → 七类映射 × 5 折 → 四条判据」这条纯 CPU 路径，
+# 不加载任何模型权重、不产生任何 GPU 时间。
+#
+# ★ 所有阈值与口径**跑前预注册**在本文件内（含 (a)–(d) 四条口径声明）。
+#   改口径只改本文件，不改代码。
+#
+# ★ 以下两处归一化口径**在实测之后推翻过初稿**：
+#   · TID2013 用 y = MOS / 9（实测可用集 MOS ∈ [0.24242, 7.21429]，是 0–9 制而非 1–9 制）
+#   · KonIQ   用 y = (m − 1) / 4，m = 1–5 制 MOS（不是计划初稿写的 MOS/100 —— 那个 0–100 列
+#     在 distributions_sets.csv 里叫 MOS，在 scores_and_distributions.csv 里叫 MOS_zscore，
+#     是逐被试 z-score 后的重标度产物，对 1–5 加权均值只有 R²=0.9908 的仿射关系）
+
+seed: 20261015
+
+# ── 判据阈值（全部预注册）────────────────────────────────────────────
+criteria:
+  c1_extrapolation_max: 0.05      # 判据 1a：落在 [min_cal, max_cal] 之外的比例 > 5% ⇒ fail
+  c1_n_bins: 20                   # 判据 1b：20 等宽 bin
+  c1_overlap_min: 0.50            # 判据 1b：OVL = Σ min(p_A, p_B) < 0.5 ⇒ fail
+  c2_grid_n: 1001                 # 判据 2a：1001 点等距网格
+  c2_monotone_tol: 1.0e-12        # 判据 2a：diff ≥ −tol
+  c2_stability_max: 0.10          # 判据 2b：p95(逐点跨折 SD) > 0.10 ⇒ fail（尺度已归一到幅宽 1）
+  c3_boot_B: 2000                 # 判据 3：配对 bootstrap 次数（**区间估计，辅助证据**）
+  c3_alpha: 0.05                  # 判据 3：95% CI
+  # ★ 判据 3 的判定式 = **等价性检验**，不是零假设显著性检验
+  #   （2026-10-15 由阳性对照证伪旧判法后改定）。
+  #   三分量一律与**同一把尺** ε 比：ε = c3_equiv_factor × √2 × median(σ_human)
+  #   语义 = 「两个评委之间的分歧幅度是否**小于人类真值自身的不确定度**」。
+  #   ⚠️ 语义随 `σ_human` 的口径订正一并改（2026-10-15 晚）：原写「人类评分者之间的天然分歧」，
+  #     那是**个体评分者**的离散度，不是真值的不确定度；两侧混用会让残差项判定整批翻转。
+  #   ⚠️ 旧判法「95% bootstrap CI 不含 0 ⇒ fail」在真值恰为 0 时约 50% 误判
+  #      （阳性对照 B := 3.7·A − 0.42 实测踩到）⇒ CI 仍照算照报，但降为辅助证据。
+  c3_equiv_factor: 1.0            # ε 的倍率（1.0 = 恰好取 √2 · median(σ_human)）
+  c3_beta_prob_span: [5.0, 95.0]  # 尺度项换算回幅度用的 y 分位跨度：|β̂| · (y_p95 − y_p05)
+                                  #   ⚠️ β̂ 量纲为一、与 ε **不同量纲**，必须换算后再比
+  c3_min_spread_ratio: 0.05       # 判据 3 退化护栏：min(SD(f_k)/SD(y)) < 5% ⇒ 三分量记 na
+                                  #   ⚠️ 挡的是「两个映射都塌成常函数 ⇒ δ̂=β̂=σ̂=0 ⇒ 伪通过」
+                                  #   这一**规格漏洞**；任何合法单调校准的输出 spread 都远高于 5%
+  c4_perm_B: 5000                 # 判据 4：置换检验次数
+  c4_alpha: 0.05                  # 判据 4：显著性水平
+
+cv:
+  n_splits: 5                     # 5 折；主结果 = 5 折样本外预测拼接
+
+# ── 七类映射（族号即 30-experiments/metrics/mapping_families.py 里的键）──
+# ⚠️ 族 1（min-max）与族 2（z-score）都是 2 参数仿射，但输出尺度不同：
+#    族 1 只压 [0,1]、**不投到人类尺度** ⇒ 判据 3 的位置项会对族 1 整族爆表。
+#    这是**真实结论**（min-max 确实不校准零点），不是实现错误。
+mappings: [none, minmax, zscore, quantile, platt, logistic5, isotonic]
+
+# ── 两个数据集 ──────────────────────────────────────────────────────
+datasets:
+
+  tid2013:
+    role: primary                 # ★ 出主结论（TID2013 对 9 个评委全部干净）
+    labels_csv: D:/datasets/tid2013/labels/tid2013_eval_labels.csv
+    label_filter: {column: set, values: null}   # 该 CSV 无 set 过滤需求，全取
+    y:
+      kind: linear
+      source_column: MOS
+      scale: 9.0                  # y = MOS / 9
+    sigma_human:
+      kind: mos_std_positional    # 与 mos_with_names.txt 按行号 zip（3,000 行同序）
+      mos_with_names: D:/datasets/tid2013/mos_with_names.txt
+      mos_std: D:/datasets/tid2013/mos_std.txt
+      scale: 9.0                  # σ_human = mos_std / 9
+      # ★ 语义（2026-10-15 晚订正，数值不变）：`mos_std` **本来就是**「MOS 估计量的不确定度」
+      #   —— 官方 readme 写 "standard deviation of MOS"，SPIC 2015 论文称其为 RMSE of MOS
+      #   并用于衡量不同国家/条件下结果之间的一致性。故本数据集**无需改动口径**，
+      #   只是把它的语义写准（改定前误把它与 KonIQ 的个体评分 SD 当同类量横比）。
+      #   ⚠️ 本数据集的口径**未被这次统一改动**：ε = √2 × median(σ_human) = **0.02013526**
+      #   （与改定前逐位相同，也与 run 产物里记的 0.0201352584 吻合）。
+      #   〔自纠：本文件初稿曾写「ε 由 0.02014 → 0.02026」——那是**探针口径错**，
+      #   在 mos_std.txt 的全 3,000 行上取中位，而本表只含可用的 2,687 张。〕
+    split:
+      kind: group_stratified      # StratifiedGroupKFold，groups = 参考图编号
+      y_bins: 5
+    domain: distortion_type       # 判据 4 分块键（24 类）
+    preds:
+      q-align:        30-experiments/runs/20261015-qalign-tid2013-l4/pred_qalign_tid2013.jsonl
+      q-realign-mini: 30-experiments/runs/20261014-qrealign-tid2013-l4/pred_qrealign_test.jsonl
+      deqa-score:     30-experiments/runs/20261015-deqascore-tid2013-l4/pred_deqascore_tid2013.jsonl
+      iqa-t1:         30-experiments/runs/20261015-iqat1-tid2013-l4/pred_iqat1_tid2013.jsonl
+      clip-iqa:       30-experiments/runs/20261014-clipiqa-tid2013-l4/pred_clipiqa_test.jsonl
+      maniqa:         30-experiments/runs/20261014-maniqa-tid2013-l4/pred_maniqa_test.jsonl
+      musiq:          30-experiments/runs/20261014-musiq-tid2013-l4/pred_musiq_test.jsonl
+      hyperiqa:       30-experiments/runs/20261014-hyperiqa-tid2013-l4/pred_hyperiqa_test.jsonl
+      topiq-nr:       30-experiments/runs/20261014-topiqnr-tid2013-l4/pred_topiqnr_test.jsonl
+
+  koniq:
+    role: control                 # 污染对照列（MANIQA 见过我们 test 的 1,607/2,015）
+    labels_csv: D:/datasets/koniq10k/labels/koniq10k_distributions_sets.csv
+    label_filter: {column: set, values: [test]}
+    # ⚠️ 锚点与 σ_human 整份取自 1–5 制那张表；distributions_sets.csv 只用来取 set 列。
+    aux_labels_csv: D:/datasets/koniq10k/labels/koniq10k_scores_and_distributions.csv
+    y:
+      kind: linear
+      source_column: MOS          # 取自 aux_labels_csv（1–5 制）
+      scale: 4.0                  # y = (m − 1) / 4
+      offset: 1.0
+    sigma_human:
+      kind: column_se             # ★ 2026-10-15 晚改定：取「MOS 估计量的不确定度」（标准误）
+      source: aux_labels_csv
+      sd_column: SD               # 1–5 制逐图 SD（c1..c5 是 94–156 个**个体评分**的计数）
+      n_column: c_total           # 该图的个体评分数 ⇒ σ_human = SD / √c_total
+      scale: 4.0                  # σ_human = (SD / √c_total) / 4
+      # ⚠️ 原先直取 `column: SD`，把它当成了「人类评分者之间的天然分歧」；
+      #   实测 `SD` 是**单个评分者**绕图上均值的离散度（与 c1..c5 自算 ddof=1 的 SD
+      #   逐图比对，10,073 行最大差 2.4e-15），而 TID2013 的 `mos_std` 是 MOS 估计的 RMSE
+      #   ⇒ 两侧不是同一类量（占人类尺度幅宽的比例 14.25% ↔ 1.42%，差 10.01 倍），ε 因此差一个数量级：
+      #   KonIQ 0.20154 ↔ TID2013 0.02014 ⇒ 判据 3 残差项 252/252 全过 ↔ 0/252 全挂。
+      #   改定后 ε = KonIQ 0.01957 ↔ TID2013 0.02014（比值 1.0291，相差 2.8%），两数据集自此同向。
+      #   证据链见上。
+    split:
+      kind: stratified            # 无参考图变体 ⇒ 「同一参考图不得跨集」是真空条件
+      y_bins: 5
+    domain: null                  # ⚠️ 判据 4 记 na：无失真类型、无内容标注
+    preds:
+      q-align:        30-experiments/runs/20261013-qalign-koniq-l4/pred_qalign_test.jsonl
+      q-realign-mini: 30-experiments/runs/20261014-qrealign-koniq-l4/pred_qrealign_test.jsonl
+      deqa-score:     30-experiments/runs/20261013-deqascore-koniq-l4/pred_deqascore_test.jsonl
+      iqa-t1:         30-experiments/runs/20261013-iqat1-koniq-l4/pred_iqat1_test.jsonl
+      clip-iqa:       30-experiments/runs/20261014-clipiqa-koniq-l4/pred_clipiqa_test.jsonl
+      maniqa:         30-experiments/runs/20261009-maniqa-koniq-l4/pred_maniqa_test.jsonl
+      musiq:          30-experiments/runs/20261010-musiq-koniq-l4/pred_musiq_test.jsonl
+      hyperiqa:       30-experiments/runs/20261010-hyperiqa-koniq-l4/pred_hyperiqa_test.jsonl
+      topiq-nr:       30-experiments/runs/20261010-topiqnr-koniq-l4/pred_topiqnr_test.jsonl
+
+# ── 9 个评委的元数据（见逐评委审计）──
+# group   = 输出机制组：A 等级期望 / B 相似度 / C 回归 / E 生成式解码
+# lineage = 训练数据·配方·研究组的重合关系（决定两个评委算不算独立观测源）
+# score_range = **理论量程**，供族 0「不校准」用（不得用观测极值，否则泄漏）
+# koniq_seen_frac = 我们官方 test 2,015 张里它见过多少；tid2013_clean = 训练集是否含 TID2013
+judges:
+  q-align:
+    group: A
+    lineage: q-future
+    backbone: mplug-owl2
+    score_range: [0.0, 1.0]
+    stack: card-qalign
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 高
+    tid2013_clean: true
+    tid2013_confidence: 极高
+  q-realign-mini:
+    group: A
+    lineage: q-future        # ⚠️ 与 Q-Align 同组、同数据、同配方，仅换底座 ⇒ 非独立观测源
+    backbone: qwen3.5-vl
+    score_range: [0.0, 1.0]
+    stack: local
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 高
+    tid2013_clean: true
+    tid2013_confidence: 中高
+  deqa-score:
+    group: A
+    lineage: deqa            # 与 Q-Align 同底座、不同研究组
+    backbone: mplug-owl2
+    score_range: [1.0, 5.0]
+    stack: card-qalign
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 高
+    tid2013_clean: true
+    tid2013_confidence: 极高
+  iqa-t1:
+    group: E
+    lineage: iqat1
+    backbone: qwen3-vl-4b
+    score_range: [1.0, 5.0]
+    stack: card-iqat1
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 高
+    tid2013_clean: true
+    tid2013_confidence: 高
+  clip-iqa:
+    group: B
+    lineage: clip
+    backbone: clip-rn50
+    score_range: [0.0, 1.0]
+    stack: local
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 高
+    tid2013_clean: null      # ⚠️ IQA 层否；CLIP 骨干的 WIT-400M 语料不可核 ⇒ 骨干层「不可判」
+    tid2013_confidence: IQA层极高-骨干层不可核
+  maniqa:
+    group: C
+    lineage: maniqa
+    backbone: vit-b-8
+    score_range: [0.0, 1.0]
+    stack: local
+    koniq_seen_frac: 0.7975
+    koniq_clean: false       # 🔴 污染：1,607 / 2,015
+    koniq_confidence: 实测
+    tid2013_clean: true
+    tid2013_confidence: 高
+  musiq:
+    group: C
+    lineage: musiq
+    backbone: resnet50
+    score_range: [0.0, 100.0]
+    stack: local
+    koniq_seen_frac: 0.80
+    koniq_clean: false       # 🔴 污染 ≈80%（种子未公布 ⇒ 无法重建干净子集）
+    koniq_confidence: 保守记账
+    tid2013_clean: true
+    tid2013_confidence: 高
+  hyperiqa:
+    group: C
+    lineage: hyperiqa
+    backbone: resnet50
+    score_range: [0.0, 1.0]
+    stack: local
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 中        # 推定干净
+    tid2013_clean: true
+    tid2013_confidence: 中
+  topiq-nr:
+    group: C
+    lineage: topiqnr
+    backbone: resnet50
+    score_range: [0.0, 1.0]
+    stack: local
+    koniq_seen_frac: 0.0
+    koniq_clean: true
+    koniq_confidence: 中        # 推定干净
+    tid2013_clean: true
+    tid2013_confidence: 中高
+
+# ── 合成对照（阶段 C）──────────────────────────────────────────────
+synthetic:
+  positive:
+    judge: maniqa
+    affine: {a: 3.7, b: -0.42}   # B := a·A + b（已知仿射）⇒ 判据 3 应全过
+  negative:
+    judge: maniqa
+    shuffle_by: distortion_type  # 把 B 的分数按失真类型打乱（保边际、破对应）⇒ 应全挂

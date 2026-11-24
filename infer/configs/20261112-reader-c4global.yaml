@@ -1,0 +1,85 @@
+# 读者配置（2026-11-12）——从**发布包内的并表**复算判据 4 的对级全局检验。
+#
+# ★ **这不是论文读数产生时用的配置。** 论文的每个数由 `20261105-p1diagnose-c4b20000.yaml`
+#   驱动：那份配置读 `labels_csv`（数据集标签原件）＋ 18 份逐评委 `pred_*.jsonl`，两样都
+#   不在发布包里。本文件把那两样换成包里已有的 `scores/p2_<数据集>.csv`——**并好的表**
+#   （`image, y, y_native, fold` ＋ 每个评委一列）。两边的数值同源：并表里每个评委列就是
+#   该评委 jsonl 的 `score`，`y` 就是标签算出的归一人类尺度。`pred_table.build_table()`
+#   的 `merged_csv` 分支只换 I/O，不重算任何量。
+#
+# ★ 能复算什么、不能复算什么：
+#   · 能：判据 4 的对级全局检验（36 对 × 7 族 × 24 域的最大 |δ̂|）、p 与 Bonferroni 线、
+#     幅度量的自助区间、6,048 行逐域区间。这些只用 `y` 与评委矩阵。
+#   · 不能：判据 3（校准后一致性）要 σ_human，并表里没有这一列 ⇒ `merged` 分支给全 NaN
+#     并打印提示。要复算判据 3 必须拿回数据集标签原件（`mos_std.txt` / KonIQ 的逐图
+#     计数），那一步本包确实做不到，README 的「What is not reproducible」一节写了。
+#
+# ★ 跑法（**在包根目录下**，相对路径按包根解析）：
+#     python -X utf8 code/c4_global.py \
+#         --cfg infer/configs/20261112-reader-c4global.yaml \
+#         --out runs/reader-c4global
+#   实测 1,316 s（36 对全跑，B = 20,000，自助 1,000 次）。只想看它跑得通可加
+#   `--limit-pairs 2 --boot 20`，约 2 分钟。
+#
+# ★ 除 `datasets` 段外，本文件与 `20261105-p1diagnose-c4b20000.yaml` 逐项相同——种子、
+#   阈值、折数、映射族都是一份配置里的同一批数，改一个就不是那次 run 了。
+
+seed: 20261015
+
+criteria:
+  c1_extrapolation_max: 0.05
+  c1_n_bins: 20
+  c1_overlap_min: 0.50
+  c2_grid_n: 1001
+  c2_monotone_tol: 1.0e-12
+  c2_stability_max: 0.10
+  c3_boot_B: 2000
+  c3_alpha: 0.05
+  c3_equiv_factor: 1.0
+  c3_beta_prob_span: [5.0, 95.0]
+  c3_min_spread_ratio: 0.05
+  c4_perm_B: 20000
+  c4_alpha: 0.05
+
+cv:
+  n_splits: 5
+
+mappings: [none, minmax, zscore, quantile, platt, logistic5, isotonic]
+
+datasets:
+
+  tid2013:
+    role: primary
+    merged_csv: scores/p2_tid2013.csv
+    split:
+      kind: group_stratified      # 与主配置同一套折：groups = 参考图编号
+      y_bins: 5
+    domain: distortion_type       # 判据 4 的 24 类分块键
+
+  koniq:
+    role: control
+    merged_csv: scores/p2_koniq10k.csv
+    split:
+      kind: stratified
+      y_bins: 5
+    domain: null                  # 无域标签 ⇒ 判据 4 在 KonIQ 上记 na（与主配置一致）
+
+judges:
+  q-align:
+    score_range: [0.0, 1.0]
+  q-realign-mini:
+    score_range: [0.0, 1.0]
+  deqa-score:
+    score_range: [1.0, 5.0]
+  iqa-t1:
+    score_range: [1.0, 5.0]
+  clip-iqa:
+    score_range: [0.0, 1.0]
+  maniqa:
+    score_range: [0.0, 1.0]
+  musiq:
+    score_range: [0.0, 100.0]
+  hyperiqa:
+    score_range: [0.0, 1.0]
+  topiq-nr:
+    score_range: [0.0, 1.0]

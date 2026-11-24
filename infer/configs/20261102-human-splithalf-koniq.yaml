@@ -1,0 +1,47 @@
+# 人类评分者分半对照（KonIQ-10k）——2026-11-02
+#
+# 用途：补「人类-人类上界」对照。
+# 口径三条，改前先改这里：
+#   1. 只有 KonIQ-10k 能做——它的 `c1..c5` 是 1–5 级的个体评分**计数**。
+#      TID2013 只有聚合 `MOS` 与 `mos_std.txt`，没有逐人票 ⇒ 本对照不覆盖它。
+#   2. 拆分是**按计数的二项近似**，不是「同一批评分者精确对半分」。
+#      两半各约 c_total/2 票 ⇒ 估计更噪 ⇒ 算出的 P 是**偏严下界**。
+#   3. ε **不复算**，直接读 v3 run 的 iso_eps，保证与 252 格模型判定同一把尺子。
+#
+# ⚠️ 本配置**不改**任何判据、阈值或既有产物；它只产出「同一把尺子下的另一组读数」。
+
+seed: 20261102
+R: 200 # 重复拆分次数；报告取中位与 2.5/97.5 分位
+
+dataset:
+  name: koniq
+  # set 过滤只在这个文件里，它同时也带 c1..c5（但那是**归一化比例**，不是计数）
+  labels_csv: D:/datasets/koniq10k/labels/koniq10k_distributions_sets.csv
+  label_filter: {column: set, values: [test]}
+  # 计数、MOS、SD 一律取自这张表（c1..c5 是**整数计数**）
+  aux_labels_csv: D:/datasets/koniq10k/labels/koniq10k_scores_and_distributions.csv
+  counts_columns: [c1, c2, c3, c4, c5]
+  total_column: c_total
+  mos_column: MOS
+  y:
+    kind: linear
+    scale: 4.0 # y = (MOS − 1) / 4，与 P1 的 KonIQ 口径逐位相同
+    offset: 1.0
+
+eps_source:
+  # ε 只读不算：与 252 格模型判定用的是同一个数
+  run: 30-experiments/runs/20261030-p1diagnose-v3-koniq
+  key: datasets.koniq.iso_eps
+
+split:
+  model: binomial_half # 每个 k 级上 c_k → Binomial(c_k, p)
+  p: 0.5
+
+interchangeability:
+  n_bins: 10
+  min_bin_n: 30
+  target_P: 0.90
+  eps_ladder: [1.0, 2.0, 5.0]
+  by_domain: false # KonIQ 无域标签
+
+out: 30-experiments/runs/20261102-human-splithalf-koniq
